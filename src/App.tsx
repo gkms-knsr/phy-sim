@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import FreeLab from "./multi/FreeLab";
+import { callPhysics } from "./physics/client";
 import type { Scene } from "./multi/types";
 import {
   ArrowUpRight,
@@ -89,17 +90,12 @@ function LegacyLab({ onFree }: { onFree: () => void }) {
     setPlaying(false);
     setTime(0);
     const timer = setTimeout(() => {
-      fetch("/api/simulate", {
+      callPhysics<Result>("/api/simulate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ kind, params }),
         signal: controller.signal,
       })
-        .then(async (res) => {
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error || "計算できませんでした");
-          return data as Result;
-        })
         .then((data) => {
           setResult(data);
           setLoading(false);
@@ -107,9 +103,8 @@ function LegacyLab({ onFree }: { onFree: () => void }) {
         .catch((e) => {
           if (e.name !== "AbortError") {
             setError(
-              e instanceof TypeError
-                ? "計算サーバーに接続できません。アプリを起動し直してください。"
-                : e.message || "計算を完了できませんでした。",
+              e.message ||
+                "計算を完了できませんでした。ページを再読み込みしてください。",
             );
             setLoading(false);
           }

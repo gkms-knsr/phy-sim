@@ -3,7 +3,10 @@ const children = [
   spawn("python3", ["-m", "server.app", "--port", "8000"], {
     stdio: "inherit",
   }),
-  spawn("node", ["node_modules/vite/bin/vite.js"], { stdio: "inherit" }),
+  spawn("node", ["node_modules/vite/bin/vite.js"], {
+    stdio: "inherit",
+    env: { ...process.env, VITE_PHYSICS_MODE: "http" },
+  }),
 ];
 let exiting = false;
 function stop(code = 0) {

@@ -31,6 +31,7 @@ import { isDynamic } from "./types";
 import { blankScene, newObject, removeItem, moveObject } from "./editor";
 import { frameIndex, nextTime, format as f } from "../clock";
 import { MathText } from "../components/Explanation";
+import { callPhysics } from "../physics/client";
 import { MultiStage } from "./MultiStage";
 import { ForceDiagram } from "./ForceDiagram";
 import { Inspector } from "./Inspector";
@@ -98,11 +99,7 @@ export default function FreeLab({
   }, [dark]);
   useEffect(() => {
     const c = new AbortController();
-    fetch("/api/multi/presets", { signal: c.signal })
-      .then((r) => {
-        if (!r.ok) throw new Error("プリセットを取得できません");
-        return r.json();
-      })
+    callPhysics<MultiPreset[]>("/api/multi/presets", { signal: c.signal })
       .then((items: MultiPreset[]) => {
         setPresets(items);
         setScene(
@@ -115,7 +112,8 @@ export default function FreeLab({
       .catch((e) => {
         if (e.name !== "AbortError") {
           setError(
-            "計算サーバーに接続できません。アプリを起動し直してください。",
+            e.message ||
+              "実験室を準備できませんでした。ページを再読み込みしてください。",
           );
           setLoading(false);
         }
@@ -134,18 +132,12 @@ export default function FreeLab({
     setResult(null);
     setError("");
     const timer = setTimeout(() => {
-      fetch("/api/multi/simulate", {
+      callPhysics<MultiResult>("/api/multi/simulate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scene }),
         signal: c.signal,
       })
-        .then(async (r) => {
-          const data = await r.json();
-          if (!r.ok)
-            throw new Error(data.error || "構成を読み取れませんでした。");
-          return data as MultiResult;
-        })
         .then((r) => {
           setResult(r);
           setResultScene(scene);
@@ -153,11 +145,7 @@ export default function FreeLab({
         })
         .catch((e) => {
           if (e.name !== "AbortError") {
-            setError(
-              e instanceof TypeError
-                ? "計算サーバーに接続できません。"
-                : e.message,
-            );
+            setError(e.message || "計算を完了できませんでした。");
             setLoading(false);
           }
         });
@@ -436,21 +424,17 @@ export default function FreeLab({
         throw new Error("60 KB以下のファイルを選択してください");
       const raw = JSON.parse(await chosen.text()),
         candidate = raw.scene ?? raw;
-      const response = await fetch("/api/multi/validate", {
+      await callPhysics<MultiResult>("/api/multi/validate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scene: candidate }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
-      const canonical = await fetch("/api/multi/normalize", {
+      const canonical = await callPhysics<Scene>("/api/multi/normalize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scene: candidate }),
       });
-      if (!canonical.ok)
-        throw new Error("実験ファイルを読み込めませんでした。");
-      change(await canonical.json());
+      change(canonical);
       setSelected("system");
       setNotice("実験を読み込みました");
     } catch (err) {
@@ -463,6 +447,9 @@ export default function FreeLab({
         <button onClick={onBack}>← 基本実験に戻る</button>
         <h1>自由実験室</h1>
         <p>{error || "実験室を準備しています…"}</p>
+        <p>
+          初回は計算環境の読み込みに少し時間がかかります。ページを閉じずにお待ちください。
+        </p>
       </div>
     );
   const dynamic = scene.objects.filter(isDynamic),

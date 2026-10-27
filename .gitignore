@@ -16,3 +16,5 @@ playwright.config.ts
 !.env.example
 .venv/
 venv/
+/public/physics-runtime/
+.vercel/
