@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Hand,
   LocateFixed,
@@ -7,6 +7,13 @@ import {
   ZoomOut,
 } from "lucide-react";
 import type { Scene, MultiFrame, Force } from "./types";
+import type { InteractionSettings, VectorSettings } from "./interaction";
+import {
+  dragPosition,
+  dragForce,
+  forceIsVisible,
+  snapDelta,
+} from "./interaction";
 import { forceColors, isDynamic } from "./types";
 import { format as f } from "../clock";
 export function MultiStage({
@@ -21,7 +28,11 @@ export function MultiStage({
   model,
   tool,
   pair,
-  forceVisible,
+  vectors,
+  interaction,
+  frames,
+  endpoint,
+  onSelectionTool,
 }: {
   scene: Scene;
   current: MultiFrame | null;
@@ -34,7 +45,11 @@ export function MultiStage({
   model: string;
   tool: string;
   pair: string;
-  forceVisible: boolean;
+  vectors: VectorSettings;
+  interaction: InteractionSettings;
+  frames: MultiFrame[];
+  endpoint: string;
+  onSelectionTool: () => void;
 }) {
   const svg = useRef<SVGSVGElement>(null),
     drag = useRef<{
@@ -43,12 +58,22 @@ export function MultiStage({
       y: number;
       type: string;
       pan: { x: number; y: number };
+      start: { x: number; y: number };
+      forceStart: { fx: number; fy: number };
+      scale: number;
     } | null>(null);
   const [zoom, setZoom] = useState(1),
     [pan, setPan] = useState({ x: 0, y: 0 }),
     [hand, setHand] = useState(false),
     [follow, setFollow] = useState(true),
-    [ghost, setGhost] = useState<{ x: number; y: number } | null>(null);
+    [ghost, setGhost] = useState<{
+      x: number;
+      y: number;
+      label: string;
+    } | null>(null);
+  useEffect(() => {
+    if (tool !== "select") setHand(false);
+  }, [tool]);
   const base = scene.objects.filter(isDynamic),
     center = base.length ? base.reduce((s, o) => s + o.x, 0) / base.length : 0;
   const scale = 42 * zoom,
@@ -72,10 +97,20 @@ export function MultiStage({
   function down(ev: React.PointerEvent, id: string, type = "body") {
     ev.stopPropagation();
     onPause();
-    if (type === "body") onSelect(id);
+    if (type === "body" || type === "force") onSelect(id);
     if (tool !== "select" && type === "body") return;
     const q = point(ev.clientX, ev.clientY);
-    drag.current = { id, ...q, type, pan };
+    const initial = type === "body" ? position(id) : { x: 0, y: 0 };
+    const applied = scene.external.find((f) => f.id === id);
+    drag.current = {
+      id,
+      ...q,
+      type,
+      pan,
+      start: { x: initial.x, y: initial.y },
+      forceStart: { fx: applied?.fx || 0, fy: applied?.fy || 0 },
+      scale,
+    };
     svg.current!.setPointerCapture(ev.pointerId);
   }
   function up(ev: React.PointerEvent) {
@@ -86,16 +121,120 @@ export function MultiStage({
     const q = point(ev.clientX, ev.clientY);
     if (Math.hypot(q.x - d.x, q.y - d.y) < 3) return;
     if (d.type === "pan") return;
+    const delta = { x: (q.x - d.x) / d.scale, y: -(q.y - d.y) / d.scale };
     if (d.type === "force") {
-      const a = scene.external.find((f) => f.id === d.id)!,
-        b = position(a.body);
-      onForce(
-        d.id,
-        Math.max(-100, Math.min(100, (q.x - X(b.x)) / (scale * 0.08))),
-        Math.max(-100, Math.min(100, (Y(b.y) - q.y) / (scale * 0.08))),
+      const value = dragForce(
+        d.forceStart,
+        {
+          x: delta.x / (0.08 * vectors.scale),
+          y: delta.y / (0.08 * vectors.scale),
+        },
+        interaction,
       );
-    } else onMove(d.id, (q.x - ox) / scale, (oy - q.y) / scale);
+      if (value.fx !== d.forceStart.fx || value.fy !== d.forceStart.fy)
+        onForce(d.id, value.fx, value.fy);
+    } else {
+      const target = dragPosition(
+        scene,
+        d.id,
+        d.start,
+        delta,
+        model,
+        interaction,
+      );
+      if (
+        Math.abs(target.x - d.start.x) + Math.abs(target.y - d.start.y) >
+        1e-9
+      )
+        onMove(d.id, target.x, target.y);
+    }
   }
+  function preview(clientX: number, clientY: number) {
+    const d = drag.current;
+    if (!d) return;
+    const q = point(clientX, clientY),
+      delta = { x: (q.x - d.x) / d.scale, y: -(q.y - d.y) / d.scale };
+    if (d.type === "force") {
+      const v = dragForce(
+        d.forceStart,
+        {
+          x: delta.x / (0.08 * vectors.scale),
+          y: delta.y / (0.08 * vectors.scale),
+        },
+        interaction,
+      );
+      const body = position(scene.external.find((a) => a.id === d.id)!.body);
+      setGhost({
+        x: X(body.x) + v.fx * scale * 0.08 * vectors.scale,
+        y: Y(body.y) - v.fy * scale * 0.08 * vectors.scale,
+        label: `F = (${f(v.fx)}, ${f(v.fy)}) N`,
+      });
+    } else {
+      const target = dragPosition(
+        scene,
+        d.id,
+        d.start,
+        delta,
+        model,
+        interaction,
+      );
+      setGhost({
+        x: X(target.x),
+        y: Y(target.y),
+        label: `x = ${f(target.x)} m / y = ${f(target.y)} m`,
+      });
+    }
+  }
+  const scope =
+    current?.bodies.filter((b) =>
+      scene.objects.some((o) => o.id === b.id && isDynamic(o)),
+    ) || [];
+  const vectorBodies = scope.filter(
+    (b) =>
+      !scene.objects.some((o) => o.id === selected && isDynamic(o)) ||
+      b.id === selected ||
+      (!!pair && b.forces.some((f) => f.pair === pair)),
+  );
+  const motionColors = { velocity: "#d18d39", acceleration: "#8e79b5" };
+  const motionArrow = (
+    id: string,
+    x: number,
+    y: number,
+    dx: number,
+    dy: number,
+    kind: "velocity" | "acceleration",
+    label: string,
+  ) =>
+    Math.hypot(dx, dy) > 0.001 && (
+      <g
+        key={`${id}-${kind}`}
+        className="multi-vector motion-vector"
+        data-vector-kind={kind}
+      >
+        <line
+          x1={x}
+          y1={y}
+          x2={x + dx}
+          y2={y + dy}
+          stroke={motionColors[kind]}
+          strokeWidth="2.3"
+          markerEnd={`url(#multi-arrow-${kind})`}
+        />
+        {vectors.labels && (
+          <text
+            x={x + dx + 6}
+            y={y + dy - 9}
+            fill={motionColors[kind]}
+            fontSize="11"
+            stroke="var(--stage)"
+            strokeWidth="3"
+            paintOrder="stroke"
+          >
+            {label}
+          </text>
+        )}
+      </g>
+    );
   const spring = (a: { x: number; y: number }, b: { x: number; y: number }) => {
     const ax = X(a.x),
       ay = Y(a.y),
@@ -118,7 +257,7 @@ export function MultiStage({
             ? "ばねの第1端 → 第2端をクリック"
             : tool === "rope"
               ? "糸の第1端 → 第2端をクリック"
-              : "ドラッグで初期位置を変更 · 外力の先端で向きと大きさを設定"}
+              : `つかんだ位置から ${interaction.positionStep} mずつ移動 · 外力は ${interaction.forceStep} Nずつ調整`}
         </span>
         <div>
           <label>
@@ -131,14 +270,20 @@ export function MultiStage({
           </label>
           <button
             aria-label="選択ツール"
-            onClick={() => setHand(false)}
+            title="物体を選択・ドラッグ（接続操作を終了）"
+            onClick={() => {
+              setHand(false);
+              onSelectionTool();
+            }}
             className={!hand ? "active" : ""}
           >
             <MousePointer2 size={15} />
           </button>
           <button
             aria-label="実験室の視点移動"
+            title="背景をドラッグして視点を移動"
             onClick={() => {
+              onSelectionTool();
               setHand(true);
               setFollow(false);
             }}
@@ -182,8 +327,8 @@ export function MultiStage({
           const q = point(e.clientX, e.clientY);
           onDrop(
             e.dataTransfer.getData("text/physica"),
-            Math.round(((q.x - ox) / scale) * 2) / 2,
-            Math.round(((oy - q.y) / scale) * 2) / 2,
+            snapDelta((q.x - ox) / scale, interaction.positionStep),
+            snapDelta((oy - q.y) / scale, interaction.positionStep),
           );
         }}
         onPointerDown={(e) => {
@@ -197,7 +342,7 @@ export function MultiStage({
               x: drag.current.pan.x + q.x - drag.current.x,
               y: drag.current.pan.y + q.y - drag.current.y,
             });
-          else setGhost(q);
+          else preview(e.clientX, e.clientY);
         }}
         onPointerUp={up}
         onPointerCancel={() => {
@@ -221,21 +366,27 @@ export function MultiStage({
               strokeWidth=".8"
             />
           </pattern>
-          {Object.entries(forceColors).map(([kind, color]) => (
-            <marker
-              id={`multi-arrow-${kind}`}
-              key={kind}
-              markerWidth="7"
-              markerHeight="7"
-              refX="5"
-              refY="3"
-              orient="auto"
-            >
-              <path d="M0 0L6 3L0 6" fill={color} />
-            </marker>
-          ))}
+          {Object.entries({ ...forceColors, ...motionColors }).map(
+            ([kind, color]) => (
+              <marker
+                id={`multi-arrow-${kind}`}
+                key={kind}
+                markerWidth="7"
+                markerHeight="7"
+                refX="5"
+                refY="3"
+                orient="auto"
+              >
+                <path d="M0 0L6 3L0 6" fill={color} />
+              </marker>
+            ),
+          )}
         </defs>
-        <rect width="900" height="430" fill="url(#multi-grid)" />
+        <rect
+          width="900"
+          height="430"
+          fill={vectors.grid ? "url(#multi-grid)" : "var(--stage)"}
+        />
         <line x1="0" x2="900" y1={oy} y2={oy} stroke="var(--axis)" />
         <text x="860" y={oy + 20} fontSize="10" fill="var(--muted)">
           x [m]
@@ -255,6 +406,26 @@ export function MultiStage({
             {v}
           </text>
         ))}
+        {vectors.trail &&
+          scene.objects.filter(isDynamic).map((o, i) => (
+            <polyline
+              key={`trail-${o.id}`}
+              data-testid={`trail-${o.id}`}
+              points={frames
+                .filter((a, j) => j % 12 === 0 && a.t <= (current?.t || 0))
+                .slice(-180)
+                .map((a) => a.bodies.find((b) => b.id === o.id))
+                .filter(Boolean)
+                .map((b) => `${X(b!.x)},${Y(b!.y)}`)
+                .join(" ")}
+              fill="none"
+              stroke={["#729879", "#b99a6b", "#888cb5"][i % 3]}
+              strokeWidth="2"
+              strokeDasharray="3 4"
+              opacity=".6"
+              className="multi-vector"
+            />
+          ))}
         {scene.objects
           .filter((o) => !isDynamic(o))
           .map((o) => (
@@ -467,37 +638,29 @@ export function MultiStage({
             </g>
           );
         })}
-        {forceVisible &&
-          current?.bodies
-            .filter((b) =>
-              scene.objects.find((o) => o.id === b.id && isDynamic(o)),
-            )
-            .filter(
-              (b) =>
-                !scene.objects.some((o) => o.id === selected && isDynamic(o)) ||
-                b.id === selected ||
-                (!!pair && b.forces.some((f) => f.pair === pair)),
-            )
-            .flatMap((b) =>
-              b.forces.map((a: Force, i) =>
-                Math.hypot(a.fx, a.fy) < 1e-8 ? null : (
-                  <g
-                    className="multi-vector"
-                    key={`${b.id}-${i}`}
-                    opacity={pair && pair !== a.pair ? 0.2 : 1}
-                  >
-                    <line
-                      x1={X(b.x)}
-                      y1={Y(b.y)}
-                      x2={X(b.x) + a.fx * scale * 0.08}
-                      y2={Y(b.y) - a.fy * scale * 0.08}
-                      stroke={forceColors[a.kind]}
-                      strokeWidth={pair === a.pair && pair ? 4 : 2}
-                      markerEnd={`url(#multi-arrow-${a.kind})`}
-                    />
+        {vectors.force &&
+          vectorBodies.flatMap((b) =>
+            b.forces.map((a: Force, i) =>
+              !vectors.kinds[a.kind] || Math.hypot(a.fx, a.fy) < 1e-8 ? null : (
+                <g
+                  className="multi-vector force-vector"
+                  data-force-kind={a.kind}
+                  key={`${b.id}-${i}`}
+                  opacity={pair && pair !== a.pair ? 0.2 : 1}
+                >
+                  <line
+                    x1={X(b.x)}
+                    y1={Y(b.y)}
+                    x2={X(b.x) + a.fx * scale * 0.08 * vectors.scale}
+                    y2={Y(b.y) - a.fy * scale * 0.08 * vectors.scale}
+                    stroke={forceColors[a.kind]}
+                    strokeWidth={pair === a.pair && pair ? 4 : 2}
+                    markerEnd={`url(#multi-arrow-${a.kind})`}
+                  />
+                  {vectors.labels && (
                     <text
-                      x={X(b.x) + a.fx * scale * 0.08 + 6}
-                      y={Y(b.y) - a.fy * scale * 0.08 - 7}
+                      x={X(b.x) + a.fx * scale * 0.08 * vectors.scale + 6}
+                      y={Y(b.y) - a.fy * scale * 0.08 * vectors.scale - 7}
                       fontSize="10"
                       fill={forceColors[a.kind]}
                       paintOrder="stroke"
@@ -506,41 +669,72 @@ export function MultiStage({
                     >
                       {a.label} {f(Math.hypot(a.fx, a.fy), 1)} N
                     </text>
-                  </g>
-                ),
+                  )}
+                </g>
               ),
-            )}
-        {scene.external.map((a) => {
-          const b = position(a.body);
-          return (
-            b && (
-              <g
-                key={a.id}
-                onPointerDown={(ev) => down(ev, a.id, "force")}
-                className="draggable"
-                data-testid={`force-${a.id}`}
-              >
-                <line
-                  x1={X(b.x)}
-                  y1={Y(b.y)}
-                  x2={X(b.x) + a.fx * scale * 0.08}
-                  y2={Y(b.y) - a.fy * scale * 0.08}
-                  stroke={forceColors.external}
-                  strokeWidth="2"
-                  strokeDasharray="4 3"
-                />
-                <circle
-                  cx={X(b.x) + a.fx * scale * 0.08}
-                  cy={Y(b.y) - a.fy * scale * 0.08}
-                  r="7"
-                  fill="var(--surface)"
-                  stroke={forceColors.external}
-                  strokeWidth="2"
-                />
-              </g>
-            )
-          );
-        })}
+            ),
+          )}
+        {vectorBodies.map((b) => (
+          <g key={`motion-${b.id}`}>
+            {vectors.velocity &&
+              motionArrow(
+                b.id,
+                X(b.x),
+                Y(b.y) - 45,
+                b.vx * 12 * vectors.scale,
+                -b.vy * 12 * vectors.scale,
+                "velocity",
+                `v = (${f(b.vx)}, ${f(b.vy)}) m/s`,
+              )}
+            {vectors.acceleration &&
+              motionArrow(
+                b.id,
+                X(b.x),
+                Y(b.y) - 85,
+                b.ax * 12 * vectors.scale,
+                -b.ay * 12 * vectors.scale,
+                "acceleration",
+                `a = (${f(b.ax)}, ${f(b.ay)}) m/s²`,
+              )}
+          </g>
+        ))}
+        {scene.external
+          .filter(
+            (a) =>
+              tool === "select" &&
+              (selected === a.id || forceIsVisible("external", vectors)),
+          )
+          .map((a) => {
+            const b = position(a.body);
+            return (
+              b && (
+                <g
+                  key={a.id}
+                  onPointerDown={(ev) => down(ev, a.id, "force")}
+                  className="draggable"
+                  data-testid={`force-${a.id}`}
+                >
+                  <line
+                    x1={X(b.x)}
+                    y1={Y(b.y)}
+                    x2={X(b.x) + a.fx * scale * 0.08 * vectors.scale}
+                    y2={Y(b.y) - a.fy * scale * 0.08 * vectors.scale}
+                    stroke={forceColors.external}
+                    strokeWidth="2"
+                    strokeDasharray="4 3"
+                  />
+                  <circle
+                    cx={X(b.x) + a.fx * scale * 0.08 * vectors.scale}
+                    cy={Y(b.y) - a.fy * scale * 0.08 * vectors.scale}
+                    r="7"
+                    fill="var(--surface)"
+                    stroke={forceColors.external}
+                    strokeWidth="2"
+                  />
+                </g>
+              )
+            );
+          })}
         {current && (
           <g className="multi-vector">
             <circle
@@ -565,14 +759,49 @@ export function MultiStage({
           </g>
         )}
         {ghost && (
-          <circle
-            cx={ghost.x}
-            cy={ghost.y}
-            r="16"
-            fill="#96aa6e33"
-            stroke="#8ba473"
-            strokeDasharray="4 3"
-          />
+          <g pointerEvents="none">
+            <circle
+              cx={ghost.x}
+              cy={ghost.y}
+              r="16"
+              fill="#96aa6e33"
+              stroke="#8ba473"
+              strokeDasharray="4 3"
+            />
+            <text
+              x={ghost.x + 20}
+              y={ghost.y - 16}
+              fill="var(--green)"
+              fontSize="12"
+              paintOrder="stroke"
+              stroke="var(--stage)"
+              strokeWidth="3"
+            >
+              {ghost.label}
+            </text>
+          </g>
+        )}
+        {endpoint && scene.objects.some((o) => o.id === endpoint) && (
+          <g pointerEvents="none">
+            <circle
+              cx={X(position(endpoint).x)}
+              cy={Y(position(endpoint).y)}
+              r="30"
+              fill="none"
+              stroke="#cf9d40"
+              strokeWidth="2"
+              strokeDasharray="5 3"
+            />
+            <text
+              x={X(position(endpoint).x)}
+              y={Y(position(endpoint).y) + 47}
+              textAnchor="middle"
+              fill="#a37f30"
+              fontSize="12"
+            >
+              第1端を選択済み
+            </text>
+          </g>
         )}
         {!scene.objects.length && (
           <g>
@@ -597,7 +826,8 @@ export function MultiStage({
           </g>
         )}
         <text x="18" y="412" fill="var(--muted)" fontSize="10">
-          力の矢印：1 N = {f(scale * 0.08)} 図内単位 ·{" "}
+          力：1 N = {f(scale * 0.08 * vectors.scale)} 図内単位 /
+          速度・加速度：12 × {vectors.scale} 図内単位／各SI単位 ·{" "}
           {model === "unsupported"
             ? "構成を確認してください"
             : model === "springs"

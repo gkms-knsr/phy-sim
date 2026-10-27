@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import type { BodyState, LabObject } from "./types";
 import { forceColors } from "./types";
+import type { VectorSettings } from "./interaction";
+import { forceIsVisible } from "./interaction";
 import { MathText } from "../components/Explanation";
 import { format as f } from "../clock";
 export function ForceDiagram({
@@ -8,11 +10,13 @@ export function ForceDiagram({
   objects,
   selected,
   onPair,
+  vectors,
 }: {
   states: BodyState[];
   objects: LabObject[];
   selected: string;
   onPair?: (id: string) => void;
+  vectors: VectorSettings;
 }) {
   const [pair, setPair] = useState("");
   const [horizontal, setHorizontal] = useState(false);
@@ -47,10 +51,14 @@ export function ForceDiagram({
   const max = Math.max(
     1,
     ...all
-      .filter((a) => !horizontal || Math.abs(a.fx) > 1e-9)
+      .filter(
+        (a) =>
+          forceIsVisible(a.kind, vectors) &&
+          (!horizontal || Math.abs(a.fx) > 1e-9),
+      )
       .map((a) => Math.hypot(a.fx, a.fy)),
   );
-  const scale = 65 / max;
+  const scale = (65 / max) * vectors.scale;
   return (
     <section className="card free-body">
       <div className="card-heading">
@@ -62,7 +70,7 @@ export function ForceDiagram({
         </h2>
       </div>
       <p className="multi-muted">
-        力の項を選ぶと、同じ接続の作用・反作用を強調します。
+        力の項を選ぶと、同じ接続の作用・反作用を強調します。図で隠した力も、下の式と合力には含めます。
       </p>
       <label className="fbd-filter">
         <input
@@ -104,6 +112,7 @@ export function ForceDiagram({
               {s.forces
                 .filter(
                   (a) =>
+                    forceIsVisible(a.kind, vectors) &&
                     Math.hypot(a.fx, a.fy) > 1e-9 &&
                     (!horizontal || Math.abs(a.fx) > 1e-9),
                 )
@@ -132,15 +141,17 @@ export function ForceDiagram({
                       }
                       markerEnd={`url(#fbd-${s.id}-${a.kind})`}
                     />
-                    <text
-                      x={130 + a.fx * scale + (a.fx >= 0 ? 5 : -5)}
-                      y={105 - a.fy * scale - 7 - (i % 2) * 12}
-                      textAnchor={a.fx < 0 ? "end" : "start"}
-                      fill={forceColors[a.kind]}
-                      fontSize="10"
-                    >
-                      {a.label}
-                    </text>
+                    {vectors.labels && (
+                      <text
+                        x={130 + a.fx * scale + (a.fx >= 0 ? 5 : -5)}
+                        y={105 - a.fy * scale - 7 - (i % 2) * 12}
+                        textAnchor={a.fx < 0 ? "end" : "start"}
+                        fill={forceColors[a.kind]}
+                        fontSize="10"
+                      >
+                        {a.label}
+                      </text>
+                    )}
                   </g>
                 ))}
             </svg>
@@ -167,6 +178,7 @@ export function ForceDiagram({
             </strong>
             <span>
               ({f(a.fx)}, {f(a.fy)}) N{" "}
+              {!forceIsVisible(a.kind, vectors) && "· 図では非表示"}{" "}
               {selected === "system" && internal.has(a.pair)
                 ? "· 内力として相殺"
                 : ""}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Scene, LabObject, Connection, ExternalForce } from "./types";
 import { isDynamic } from "./types";
 function NumberField({
@@ -8,6 +8,7 @@ function NumberField({
   min = -30,
   max = 30,
   unit = "m",
+  step = 0.1,
 }: {
   label: string;
   value: number;
@@ -15,10 +16,17 @@ function NumberField({
   min?: number;
   max?: number;
   unit?: string;
+  step?: number;
 }) {
   const [draft, setDraft] = useState(String(value));
-  useEffect(() => setDraft(String(Number(value.toFixed(5)))), [value]);
+  const dirty = useRef(false);
+  useEffect(() => {
+    setDraft(String(Number(value.toFixed(5))));
+    dirty.current = false;
+  }, [value]);
   function commit() {
+    if (!dirty.current) return;
+    dirty.current = false;
     let n = Number(draft);
     if (!draft.trim() || !Number.isFinite(n)) {
       setDraft(String(value));
@@ -26,7 +34,7 @@ function NumberField({
     }
     n = Math.max(min, Math.min(max, n));
     setDraft(String(n));
-    onChange(n);
+    if (n !== value) onChange(n);
   }
   return (
     <label className="multi-number">
@@ -37,9 +45,12 @@ function NumberField({
           aria-label={label}
           min={min}
           max={max}
-          step="any"
+          step={step}
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            dirty.current = true;
+            setDraft(e.target.value);
+          }}
           onBlur={commit}
           onKeyDown={(e) => {
             if (e.key === "Enter") e.currentTarget.blur();
@@ -57,6 +68,8 @@ export function Inspector({
   onConnection,
   onExternal,
   onRemove,
+  positionStep,
+  forceStep,
 }: {
   scene: Scene;
   selected: string;
@@ -64,12 +77,18 @@ export function Inspector({
   onConnection: (id: string, patch: Partial<Connection>) => void;
   onExternal: (id: string, patch: Partial<ExternalForce>) => void;
   onRemove: (id: string) => void;
+  positionStep: number;
+  forceStep: number;
 }) {
   const o = scene.objects.find((o) => o.id === selected),
     c = scene.connections.find((o) => o.id === selected),
     force = scene.external.find((o) => o.id === selected);
   return (
-    <section className="card multi-inspector">
+    <section
+      className="card multi-inspector"
+      tabIndex={-1}
+      aria-label="選択したオブジェクトの編集"
+    >
       <div className="card-heading">
         <h2>選択したオブジェクト</h2>
         {selected !== "system" && (o || c || force) && (
@@ -114,11 +133,13 @@ export function Inspector({
             )}
             <NumberField
               label="初期位置 x"
+              step={positionStep}
               value={o.x}
               onChange={(v) => onObject(o.id, { x: v })}
             />
             <NumberField
               label="初期位置 y"
+              step={positionStep}
               value={o.y}
               onChange={(v) => onObject(o.id, { y: v })}
             />
@@ -148,6 +169,7 @@ export function Inspector({
                 <>
                   <NumberField
                     label="静止摩擦係数"
+                    step={0.01}
                     value={o.mus}
                     onChange={(v) => onObject(o.id, { mus: v })}
                     min={o.muk}
@@ -156,6 +178,7 @@ export function Inspector({
                   />
                   <NumberField
                     label="動摩擦係数"
+                    step={0.01}
                     value={o.muk}
                     onChange={(v) => onObject(o.id, { muk: v })}
                     min={0}
@@ -185,6 +208,7 @@ export function Inspector({
             {o.kind === "incline" && (
               <NumberField
                 label="斜面の角度"
+                step={1}
                 value={o.angle}
                 onChange={(v) => onObject(o.id, { angle: v })}
                 min={0}
@@ -315,6 +339,7 @@ export function Inspector({
           <div className="multi-fields">
             <NumberField
               label="外力 Fₓ"
+              step={forceStep}
               value={force.fx}
               onChange={(v) => onExternal(force.id, { fx: v })}
               min={-100}
@@ -323,6 +348,7 @@ export function Inspector({
             />
             <NumberField
               label="外力 Fᵧ"
+              step={forceStep}
               value={force.fy}
               onChange={(v) => onExternal(force.id, { fy: v })}
               min={-100}

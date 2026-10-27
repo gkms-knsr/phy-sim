@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   Check,
   ChevronRight,
   Download,
   FlaskConical,
+  HelpCircle,
   Link2,
   Moon,
   Pause,
@@ -34,6 +35,10 @@ import { MultiStage } from "./MultiStage";
 import { ForceDiagram } from "./ForceDiagram";
 import { Inspector } from "./Inspector";
 import { MultiGraph } from "./MultiGraph";
+import { EditorControls } from "./EditorControls";
+import { QuickStart, LabGuide } from "./LabGuide";
+import { RunStatus } from "./RunStatus";
+import { readInteraction, readVectors, inferEditorModel } from "./interaction";
 import "./multi.css";
 const palette = [
   ["mass", "●", "質点"],
@@ -68,7 +73,9 @@ export default function FreeLab({
     [selected, setSelected] = useState("load"),
     [tool, setTool] = useState("select"),
     [endpoint, setEndpoint] = useState(""),
-    [forceVisible, setForceVisible] = useState(true),
+    [vectors, setVectors] = useState(readVectors),
+    [interaction, setInteraction] = useState(readInteraction),
+    [guideOpen, setGuideOpen] = useState(false),
     [pair, setPair] = useState(""),
     [deriving, setDeriving] = useState(false),
     [step, setStep] = useState(1),
@@ -76,6 +83,13 @@ export default function FreeLab({
   const [dark, setDark] = useState(
     () => localStorage.getItem("physica-theme") === "dark",
   );
+  const [resultScene, setResultScene] = useState<Scene | null>(null);
+  useEffect(() => {
+    localStorage.setItem("physica-interaction", JSON.stringify(interaction));
+  }, [interaction]);
+  useEffect(() => {
+    localStorage.setItem("physica-vectors", JSON.stringify(vectors));
+  }, [vectors]);
   const sequence = useRef(0),
     file = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -134,6 +148,7 @@ export default function FreeLab({
         })
         .then((r) => {
           setResult(r);
+          setResultScene(scene);
           setLoading(false);
         })
         .catch((e) => {
@@ -152,12 +167,22 @@ export default function FreeLab({
       c.abort();
     };
   }, [scene]);
-  const ready = !!result?.supported && !loading && !!result.frames.length;
+  const ready =
+    !!result?.supported &&
+    !loading &&
+    resultScene === scene &&
+    !!result.frames.length;
+  const canPlay = ready && tool === "select" && !guideOpen;
+  const closeGuide = useCallback(() => setGuideOpen(false), []);
+  const openGuide = () => {
+    setPlaying(false);
+    setGuideOpen(true);
+  };
   const current = ready
     ? result.frames[frameIndex(time, result.dt, result.frames.length)]
     : null;
   useEffect(() => {
-    if (!playing || !ready) return;
+    if (!playing || !canPlay) return;
     let id = 0,
       last: number | null = null;
     const tick = (now: number) => {
@@ -170,7 +195,7 @@ export default function FreeLab({
     };
     id = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(id);
-  }, [playing, ready, speed, result]);
+  }, [playing, canPlay, speed, result]);
   useEffect(() => {
     if (result && time >= result.duration) setPlaying(false);
   }, [time, result]);
@@ -186,13 +211,13 @@ export default function FreeLab({
         !["INPUT", "SELECT", "BUTTON", "TEXTAREA", "SUMMARY"].includes(
           (e.target as HTMLElement).tagName,
         ) &&
-        ready
+        canPlay
       ) {
         e.preventDefault();
         setPlaying((p) => !p);
         if (time >= result!.duration) setTime(0);
       }
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && !guideOpen) {
         setTool("select");
         setEndpoint("");
         setDeriving(false);
@@ -200,12 +225,34 @@ export default function FreeLab({
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  }, [ready, time, result]);
+  }, [canPlay, time, result, guideOpen]);
   function change(next: Scene) {
     setPlaying(false);
     setTime(0);
     setScene(next);
+    setLoading(true);
+    setResult(null);
     setPair("");
+  }
+  function editTarget(id: string) {
+    setTool("select");
+    setEndpoint("");
+    setSelected(id);
+    setPair("");
+    requestAnimationFrame(() => {
+      const panel = document.querySelector<HTMLElement>(".multi-inspector");
+      panel?.scrollIntoView({
+        block: "nearest",
+        behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? "instant"
+          : "smooth",
+      });
+      panel?.focus({ preventScroll: true });
+    });
+  }
+  function loadExample(id: string) {
+    const p = presets.find((p) => p.id === id);
+    if (p) load(p);
   }
   function uid(prefix: string) {
     let id: string;
@@ -298,6 +345,14 @@ export default function FreeLab({
   }
   function updateObject(id: string, patch: Partial<LabObject>) {
     if (!scene) return;
+    const original = scene.objects.find((o) => o.id === id);
+    if (
+      !original ||
+      Object.entries(patch).every(
+        ([key, value]) => original[key as keyof LabObject] === value,
+      )
+    )
+      return;
     let next = {
       ...scene,
       objects: scene.objects.map((o) => (o.id === id ? { ...o, ...patch } : o)),
@@ -415,21 +470,23 @@ export default function FreeLab({
     regime = current?.regime;
   const status = loading
     ? "構成を確認中"
-    : error
-      ? "入力を確認してください"
-      : !result?.supported
-        ? "未対応の構成"
-        : playing
-          ? "実行中"
-          : regime === "sticking"
-            ? "一体で運動"
-            : regime === "sliding"
-              ? "相対的に滑走"
-              : regime === "taut"
-                ? "糸が張っている"
-                : regime === "slack"
-                  ? "糸がたるんでいる"
-                  : "一時停止";
+    : tool !== "select"
+      ? "接続操作中"
+      : error
+        ? "入力を確認してください"
+        : !result?.supported
+          ? "未対応の構成"
+          : playing
+            ? "実行中"
+            : regime === "sticking"
+              ? "一体で運動"
+              : regime === "sliding"
+                ? "相対的に滑走"
+                : regime === "taut"
+                  ? "糸が張っている"
+                  : regime === "slack"
+                    ? "糸がたるんでいる"
+                    : "一時停止";
   return (
     <div className="free-lab">
       <header className="multi-header">
@@ -440,6 +497,10 @@ export default function FreeLab({
           </span>
         </a>
         <div>
+          <button aria-label="自由実験の使い方" onClick={openGuide}>
+            <HelpCircle size={16} />
+            使い方
+          </button>
           <button onClick={onBack}>
             <ArrowLeft size={15} />
             基本実験に戻る
@@ -546,20 +607,13 @@ export default function FreeLab({
               {ready ? <Check size={13} /> : <Link2 size={13} />} {status}
             </span>
           </div>
+          <QuickStart onGuide={openGuide} onPreset={loadExample} />
           <div className="multi-columns">
             <div className="multi-center">
               <section className="card">
                 <div className="card-heading">
                   <h2>{scene.title}</h2>
                   <div className="multi-inline-controls">
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={forceVisible}
-                        onChange={(e) => setForceVisible(e.target.checked)}
-                      />
-                      力の矢印
-                    </label>
                     <button
                       className={selected === "system" ? "active" : ""}
                       onClick={() => {
@@ -572,6 +626,12 @@ export default function FreeLab({
                     </button>
                   </div>
                 </div>
+                <EditorControls
+                  interaction={interaction}
+                  onInteraction={setInteraction}
+                  vectors={vectors}
+                  onVectors={setVectors}
+                />
                 <MultiStage
                   scene={scene}
                   current={current}
@@ -584,17 +644,30 @@ export default function FreeLab({
                         id,
                         x,
                         y,
-                        result?.model || "unsupported",
+                        result?.model && result.model !== "unsupported"
+                          ? result.model
+                          : inferEditorModel(scene),
                       ),
                     )
                   }
                   onForce={(id, fx, fy) => updateExternal(id, { fx, fy })}
                   onDrop={add}
                   onPause={() => setPlaying(false)}
-                  model={result?.model || "unsupported"}
+                  model={
+                    result?.model && result.model !== "unsupported"
+                      ? result.model
+                      : inferEditorModel(scene)
+                  }
                   tool={tool}
                   pair={pair}
-                  forceVisible={forceVisible}
+                  vectors={vectors}
+                  interaction={interaction}
+                  frames={result?.frames || []}
+                  endpoint={endpoint}
+                  onSelectionTool={() => {
+                    setTool("select");
+                    setEndpoint("");
+                  }}
                 />
                 {tool !== "select" && (
                   <div className="multi-connect-hint">
@@ -612,6 +685,23 @@ export default function FreeLab({
                     </button>
                   </div>
                 )}
+                <div id="lab-run-status">
+                  <RunStatus
+                    scene={scene}
+                    result={result}
+                    loading={loading}
+                    error={error}
+                    tool={tool}
+                    endpoint={endpoint}
+                    onSelect={editTarget}
+                    onCancel={() => {
+                      setTool("select");
+                      setEndpoint("");
+                    }}
+                    onGuide={openGuide}
+                    onAdd={() => add("mass")}
+                  />
+                </div>
                 <div className="multi-playback">
                   <button
                     aria-label="自由実験をリセット"
@@ -624,7 +714,8 @@ export default function FreeLab({
                   </button>
                   <button
                     className="primary-button"
-                    disabled={!ready}
+                    aria-describedby="lab-run-status"
+                    disabled={!canPlay}
                     aria-label={
                       playing ? "自由実験を一時停止" : "自由実験を再生"
                     }
@@ -638,7 +729,7 @@ export default function FreeLab({
                   </button>
                   <button
                     aria-label="自由実験を1ステップ進める"
-                    disabled={!ready}
+                    disabled={!canPlay}
                     onClick={() => {
                       setPlaying(false);
                       setTime((t) =>
@@ -678,7 +769,7 @@ export default function FreeLab({
                     max={result?.duration || scene.duration}
                     step={result?.dt || 1 / 120}
                     value={time}
-                    disabled={!ready}
+                    disabled={!canPlay}
                     onChange={(e) => {
                       setPlaying(false);
                       setTime(Number(e.target.value));
@@ -687,23 +778,21 @@ export default function FreeLab({
                   <span>{f(result?.duration || scene.duration, 2)} s</span>
                 </div>
               </section>
-              {(error || (result && !result.supported)) && (
-                <div className="multi-alert" role="alert">
-                  <strong>この構成では計算を開始しません</strong>
-                  {error ? (
-                    <p>{error}</p>
-                  ) : (
-                    result?.reasons.map((r) => <p key={r}>{r}</p>)
-                  )}
-                  <span>
-                    配置・接続を修正するか、対応するプリセットを選択してください。
-                  </span>
-                </div>
-              )}
               {result?.warning && (
                 <div className="multi-boundary">
-                  <strong>対応範囲の境界</strong>
-                  <p>{result.warning}</p>
+                  <strong>
+                    {time >= result.duration
+                      ? "対応範囲の端で停止しました"
+                      : `この条件で実行できる時間：${f(result.duration)} sまで`}
+                  </strong>
+                  <p>
+                    {time >= result.duration
+                      ? result.warning
+                      : result.warning.replace(
+                          "その直前で停止しました",
+                          "その直前まで計算します",
+                        )}
+                  </p>
                 </div>
               )}
               <div className="multi-summary card">
@@ -789,6 +878,7 @@ export default function FreeLab({
                 states={current?.bodies || []}
                 selected={selected}
                 onPair={setPair}
+                vectors={vectors}
               />
               <section className="card multi-equations">
                 <div className="card-heading">
@@ -850,6 +940,8 @@ export default function FreeLab({
                 onObject={updateObject}
                 onConnection={updateConnection}
                 onExternal={updateExternal}
+                positionStep={interaction.positionStep}
+                forceStep={interaction.forceStep}
                 onRemove={(id) => {
                   change(removeItem(scene, id));
                   setSelected("system");
@@ -995,6 +1087,7 @@ export default function FreeLab({
           </footer>
         </main>
       </div>
+      <LabGuide open={guideOpen} onClose={closeGuide} onPreset={loadExample} />
       {notice && (
         <div className="toast" role="status">
           {notice}
