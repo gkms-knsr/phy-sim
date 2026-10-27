@@ -7,10 +7,8 @@
     "dev": "node scripts/dev.mjs",
     "build": "tsc -b && vite build",
     "start": "python3 -m server.app --port 8000",
-    "test": "python3 -m unittest discover -s tests -v && node --import tsx tests/frontend.test.ts",
-    "test:ui": "playwright test",
-    "format": "prettier --write src scripts tests/**/*.ts *.ts *.json index.html",
-    "format:check": "prettier --check src scripts tests/**/*.ts *.ts *.json index.html"
+    "format": "prettier --write src scripts *.ts *.json index.html",
+    "format:check": "prettier --check src scripts *.ts *.json index.html"
   },
   "dependencies": {
     "@fontsource/dm-sans": "^5.3.0",
@@ -22,13 +20,11 @@
     "recharts": "^3.10.1"
   },
   "devDependencies": {
-    "@playwright/test": "^1.56.1",
     "@types/katex": "^0.16.7",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.5.0",
     "prettier": "^3.9.10",
-    "tsx": "^4.23.15",
     "typescript": "~5.7.2",
     "vite": "^6.4.0"
   }

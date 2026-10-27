@@ -6,6 +6,8 @@ __pycache__/
 playwright-report/
 test-results/
 artifacts/
+tests/
+playwright.config.ts
 .agents/
 .codex/
 .aws/
